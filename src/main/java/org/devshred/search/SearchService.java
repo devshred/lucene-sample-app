@@ -33,14 +33,19 @@ import org.springframework.stereotype.Service;
 @Service
 @Slf4j
 public class SearchService {
-  private Directory directory;
   private Analyzer analyzer;
+  private Directory directory;
+  private IndexWriter writer;
   private QueryParser queryParser;
 
   public SearchService(@Value("${index.location:lucene.idx}") String indexLocation) {
     try {
-      directory = new MMapDirectory(Paths.get(indexLocation));
       analyzer = new StandardAnalyzer();
+
+      directory = new MMapDirectory(Paths.get(indexLocation));
+      writer = new IndexWriter(directory, new IndexWriterConfig(analyzer));
+      writer.commit();
+
       queryParser = new QueryParser("title", analyzer);
 
       final IndexReader reader = DirectoryReader.open(directory);
@@ -57,27 +62,23 @@ public class SearchService {
   }
 
   public void addToIndex(List<SearchDocument> searchDocuments) {
-    try {
-      final IndexWriterConfig indexWriterConfig = new IndexWriterConfig(analyzer);
-      final IndexWriter writer = new IndexWriter(directory, indexWriterConfig);
+    for (SearchDocument searchDocument : searchDocuments) {
+      final Document document = new Document();
+      document.add(new TextField("url", searchDocument.getUrl(), Field.Store.YES));
+      document.add(new TextField("title", searchDocument.getTitle(), Field.Store.YES));
+      document.add(new TextField("content", searchDocument.getContent(), Field.Store.YES));
 
-      for (SearchDocument searchDocument : searchDocuments) {
-        final Document document = new Document();
-        document.add(new TextField("url", searchDocument.getUrl(), Field.Store.YES));
-        document.add(new TextField("title", searchDocument.getTitle(), Field.Store.YES));
-        document.add(new TextField("content", searchDocument.getContent(), Field.Store.YES));
-
-        try {
-          writer.addDocument(document);
-          log.debug("added to index: {}", searchDocument.getTitle());
-        } catch (IOException e) {
-          log.error("failed to add to index: {}", searchDocument.getTitle(), e);
-        }
+      try {
+        writer.addDocument(document);
+        log.debug("added to index: {}", searchDocument.getTitle());
+      } catch (IOException e) {
+        log.error("failed to add to index: {}", searchDocument.getTitle(), e);
       }
-
-      writer.close();
-    } catch (IOException e) {
-      throw new RuntimeException(e);
+      try {
+        writer.commit();
+      } catch (IOException e) {
+        log.error("failed to commit to index", e);
+      }
     }
   }
 
