@@ -48,6 +48,16 @@ public class RandomController {
     log.info("batchUpdate. entries: {}, time: {}", numberOfEntries, stopwatch);
   }
 
+  @GetMapping("/buffer")
+  @ResponseStatus(HttpStatus.ACCEPTED)
+  public void bufferedUpdate(@RequestParam("n") Integer numberOfEntries) {
+    final List<SearchDocument> documents = createListOfRandomStrings(numberOfEntries);
+
+    final Stopwatch stopwatch = Stopwatch.createStarted();
+    documents.forEach(searchService::bufferedAddToIndex);
+    log.info("bufferedUpdate. entries: {}, time: {}", numberOfEntries, stopwatch);
+  }
+
   private List<SearchDocument> createListOfRandomStrings(int numberOfEntries) {
     return IntStream.range(0, numberOfEntries)
         .mapToObj(

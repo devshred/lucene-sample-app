@@ -5,6 +5,8 @@ import static java.util.Collections.singletonList;
 import io.vavr.control.Try;
 import java.io.IOException;
 import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import javax.annotation.PreDestroy;
@@ -12,8 +14,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field;
-import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexNotFoundException;
 import org.apache.lucene.index.IndexReader;
@@ -28,23 +28,30 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.MMapDirectory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 @Service
 @Slf4j
 public class SearchService {
+  private static final int WRITER_BUFFER_SIZE = 1_00;
+  private static final int WRITER_BUFFER_TIME = 10;
+
   private Analyzer analyzer;
   private Directory directory;
   private IndexWriter writer;
   private QueryParser queryParser;
+  private Instant lastCommit;
 
   public SearchService(@Value("${index.location:lucene.idx}") String indexLocation) {
     try {
       analyzer = new StandardAnalyzer();
 
       directory = new MMapDirectory(Paths.get(indexLocation));
+      log.info("created info at {}", indexLocation);
       writer = new IndexWriter(directory, new IndexWriterConfig(analyzer));
       writer.commit();
+      lastCommit = Instant.now();
 
       queryParser = new QueryParser("title", analyzer);
 
@@ -63,10 +70,7 @@ public class SearchService {
 
   public void addToIndex(List<SearchDocument> searchDocuments) {
     for (SearchDocument searchDocument : searchDocuments) {
-      final Document document = new Document();
-      document.add(new TextField("url", searchDocument.getUrl(), Field.Store.YES));
-      document.add(new TextField("title", searchDocument.getTitle(), Field.Store.YES));
-      document.add(new TextField("content", searchDocument.getContent(), Field.Store.YES));
+      final Document document = searchDocument.toDocument();
 
       try {
         writer.addDocument(document);
@@ -78,6 +82,38 @@ public class SearchService {
         writer.commit();
       } catch (IOException e) {
         log.error("failed to commit to index", e);
+      }
+    }
+  }
+
+  public void bufferedAddToIndex(SearchDocument searchDocument) {
+    final Document document = searchDocument.toDocument();
+
+    try {
+      writer.addDocument(document);
+      log.debug("added to index: {}", searchDocument.getTitle());
+    } catch (IOException e) {
+      log.error("failed to add to index: {}", searchDocument.getTitle(), e);
+    }
+
+    checkIndexWriter();
+  }
+
+  @Scheduled(fixedRate = WRITER_BUFFER_TIME * 1000 / 3)
+  public void checkIndexWriter() {
+    int bufferedDocs = writer.numRamDocs();
+    long timeInBuffer = Duration.between(lastCommit, Instant.now()).toSeconds();
+    if (bufferedDocs >= WRITER_BUFFER_SIZE || timeInBuffer >= WRITER_BUFFER_TIME) {
+      if (writer.hasUncommittedChanges()) {
+        log.info("commit {} writes to index", bufferedDocs);
+        try {
+          writer.commit();
+          lastCommit = Instant.now();
+        } catch (IOException e) {
+          log.error("failed to commit to index", e);
+        }
+      } else {
+        log.debug("nothing to commit");
       }
     }
   }
@@ -105,6 +141,7 @@ public class SearchService {
   @PreDestroy
   private void close() {
     try {
+      writer.close();
       directory.close();
       log.info("directory closed");
     } catch (IOException e) {
